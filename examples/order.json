@@ -1,0 +1,9 @@
+{
+  "request_id": "multi-item-demo-001",
+  "customer_name": "Demo Customer",
+  "items": [
+    { "product": "Pen", "quantity": 2 },
+    { "product": "Notebook", "quantity": 2 },
+    { "product": "School bag", "quantity": 1 }
+  ]
+}
