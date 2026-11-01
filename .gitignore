@@ -1,0 +1,8 @@
+.env
+.env.*
+!.env.example
+config.local.*
+*-response.txt
+node_modules/
+.DS_Store
+Thumbs.db

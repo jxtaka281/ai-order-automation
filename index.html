@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Order assistant</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 480px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+
+    textarea,
+    button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 12px;
+      margin-top: 12px;
+      font: inherit;
+    }
+
+    button {
+      background: #6d28d9;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    #reply {
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>Tell us what you need</h1>
+
+  <p>Available products: Notebook, Pen and School bag.</p>
+
+  <form id="messageForm">
+    <label for="message">Your message</label>
+
+    <textarea
+      id="message"
+      rows="4"
+      placeholder="I'm Emeka. Please send me 2 pens, 2 notebooks and 1 school bag."
+      required
+    ></textarea>
+
+    <button id="sendButton" type="submit">
+      Send message
+    </button>
+  </form>
+
+  <p id="reply" role="status"></p>
+
+  <button id="confirmButton" type="button" hidden>
+    Confirm order
+  </button>
+
+  <script>
+    const webhookUrl =
+      "YOUR_AI_WEBHOOK_URL";
+
+    const orderWebhookUrl =
+      "YOUR_ORDER_WEBHOOK_URL";
+
+    const form = document.getElementById("messageForm");
+    const button = document.getElementById("sendButton");
+    const reply = document.getElementById("reply");
+    const confirmButton = document.getElementById("confirmButton");
+
+    const allowedProducts = [
+      "Notebook",
+      "Pen",
+      "School bag"
+    ];
+
+    let pendingOrder = null;
+    let savingOrder = false;
+
+    // Send the customer's message to the AI scenario.
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+
+      // Prevent another submission while processing or awaiting a retry.
+      if (savingOrder || button.disabled) return;
+
+      pendingOrder = null;
+      confirmButton.hidden = true;
+
+      const message =
+        document.getElementById("message").value.trim();
+
+      if (!message) {
+        reply.textContent = "Please enter your message.";
+        return;
+      }
+
+      button.disabled = true;
+      reply.textContent = "Reading your message…";
+
+      try {
+        const response = await fetch(webhookUrl, {
+          method: "POST",
+          body: new URLSearchParams({ message })
+        });
+
+        const text = await response.text();
+
+        if (!response.ok) {
+          reply.textContent =
+            "Could not process your message: " + text;
+          return;
+        }
+
+        let order;
+
+        try {
+          order = JSON.parse(text);
+        } catch {
+          // The clarification route currently returns plain text.
+          reply.textContent = text;
+          return;
+        }
+
+        if (!order || order.status !== "needs_confirmation") {
+          reply.textContent =
+            "The response was not an order preview. " +
+            "Please check Make History.";
+          return;
+        }
+
+        // The AI scenario must return an array named items.
+        if (!Array.isArray(order.items) || order.items.length === 0) {
+          reply.textContent =
+            "No items list was received. Make must return " +
+            "all products in an items list.";
+          return;
+        }
+
+        const items = [];
+
+        // Validate every item before allowing confirmation.
+        for (const item of order.items) {
+          const rawQuantity = item && item.quantity;
+          const quantity = Number(rawQuantity);
+
+          if (
+            !item ||
+            !allowedProducts.includes(item.product) ||
+            !["string", "number"].includes(typeof rawQuantity) ||
+            !Number.isSafeInteger(quantity) ||
+            quantity < 1
+          ) {
+            reply.textContent =
+              "Please provide a recognised product and a positive " +
+              "whole-number quantity for every item. " +
+              "Nothing has been saved.";
+            return;
+          }
+
+          items.push({
+            product: item.product,
+            quantity: quantity
+          });
+        }
+
+        // Generate one request ID for the entire order.
+        pendingOrder = {
+          request_id: crypto.randomUUID(),
+          customer_name:
+            typeof order.customer_name === "string"
+              ? order.customer_name
+              : "",
+          items: items
+        };
+
+        const itemSummary = items
+          .map((item, index) => {
+            return (
+              (index + 1) + ". " +
+              item.product +
+              " — Quantity: " +
+              item.quantity
+            );
+          })
+          .join("\n");
+
+        reply.textContent =
+          "Please check ALL items in your order:\n\n" +
+          "Name: " +
+          (pendingOrder.customer_name || "Not provided") +
+          "\n\n" +
+          itemSummary +
+          "\n\nIf anything is missing or incorrect, edit your " +
+          "message and send it again.\n" +
+          "This order has not been saved yet.";
+
+        confirmButton.textContent = "Confirm order";
+        confirmButton.disabled = false;
+        confirmButton.hidden = false;
+
+      } catch {
+        reply.textContent =
+          "Could not read the reply. Check Make History " +
+          "to see whether the request ran.";
+
+      } finally {
+        button.disabled = false;
+      }
+    });
+
+    // Send every confirmed item to the order-saving scenario.
+    confirmButton.addEventListener("click", async () => {
+      if (!pendingOrder || savingOrder) return;
+
+      const confirmedOrder =
+        JSON.parse(JSON.stringify(pendingOrder));
+
+      savingOrder = true;
+      confirmButton.disabled = true;
+      button.disabled = true;
+
+      reply.textContent = "Saving your confirmed order…";
+
+      try {
+        const response = await fetch(orderWebhookUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify(confirmedOrder)
+        });
+
+        const message = await response.text();
+
+        // Make must reject an invalid order before saving any of it.
+        if (response.status === 400) {
+          reply.textContent =
+            "Please correct your order: " + message;
+
+          pendingOrder = null;
+          confirmButton.hidden = true;
+          confirmButton.textContent = "Confirm order";
+          return;
+        }
+
+        if (
+          !response.ok ||
+          !message.trim() ||
+          message.trim() === "Accepted"
+        ) {
+          throw new Error("No confirmed order result received.");
+        }
+
+        reply.textContent = message;
+
+        // Clear the order only after receiving confirmation.
+        pendingOrder = null;
+        confirmButton.hidden = true;
+        confirmButton.textContent = "Confirm order";
+
+      } catch {
+        // Keep every item and the original request ID for the retry.
+        reply.textContent =
+          "We couldn't confirm the result. " +
+          "Click Retry same order to try again. " +
+          "Your order reference is remembered automatically. " +
+          "Keep this page open and do not refresh it.";
+
+        confirmButton.textContent = "Retry same order";
+        confirmButton.hidden = false;
+
+      } finally {
+        savingOrder = false;
+        confirmButton.disabled = false;
+
+        // Block a new preview while the order awaits a retry.
+        button.disabled = pendingOrder !== null;
+      }
+    });
+  </script>
+</body>
+</html>
